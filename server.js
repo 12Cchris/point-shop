@@ -117,7 +117,7 @@ function save() {
 }
 const uid = () => 'm' + crypto.randomBytes(5).toString('hex');
 const nowStr = () => new Date().toLocaleString('ko-KR', { hour12: false, timeZone: 'Asia/Seoul' });
-function log(m, type, amount, detail) {
+function log(m, type, amount, detail, extra = {}) {
   const item = {
     id: 'h' + crypto.randomBytes(6).toString('hex'),
     t: nowStr(),
@@ -127,10 +127,12 @@ function log(m, type, amount, detail) {
     amount,
     detail,
     balance: m.points,
+    ...extra,
   };
-  if (type === '구매') item.status = 'pending';
+  if (type === '구매' && !item.status) item.status = 'pending';
   db.history.unshift(item);
   if (db.history.length > 2000) db.history.length = 2000;
+  return item;
 }
 const allProducts = () => db.products || PRODUCTS;
 const remain = p => (p.stock == null ? null : Math.max(0, p.stock - (db.sold[p.id] || 0)));
@@ -229,9 +231,24 @@ app.post('/api/buy', auth('member'), (req, res) => {
   lines.forEach(({ p, n }) => { db.sold[p.id] = (db.sold[p.id] || 0) + n; });
   m.points -= total;
   const detail = lines.map(({ p, n }) => `${p.name} ×${n}`).join(', ');
-  log(m, '구매', -total, detail);
+  log(m, '구매', -total, detail, { items: { ...items } });
   save();
   res.json({ ok: true, detail, member: publicMember(m), products: publicProducts() });
+});
+
+/* 회원 환불 요청 */
+app.post('/api/refund-request', auth('member'), (req, res) => {
+  const { historyId } = req.body || {};
+  const h = db.history.find(x => x.id === historyId);
+  if (!h) return bad(res, '구매 내역을 찾을 수 없습니다.', 404);
+  if (h.mid !== req.session.mid) return bad(res, '본인의 구매 내역만 환불 요청할 수 있습니다.', 403);
+  if (h.type !== '구매') return bad(res, '구매 내역만 환불 요청이 가능합니다.');
+  if (h.status === 'refunded') return bad(res, '이미 환불 완료된 내역입니다.');
+  if (h.status === 'refund_pending') return bad(res, '이미 환불 요청되어 관리자 승인 대기 중입니다.');
+
+  h.status = 'refund_pending';
+  save();
+  res.json({ ok: true, status: 'refund_pending' });
 });
 
 /* 관리자 */
@@ -320,6 +337,42 @@ app.post('/api/admin/history/:id/status', auth('admin'), (req, res) => {
   h.status = h.status === 'done' ? 'pending' : 'done';
   save();
   res.json({ ok: true, status: h.status });
+});
+app.post('/api/admin/history/:id/refund-approve', auth('admin'), (req, res) => {
+  const h = db.history.find(x => x.id === req.params.id);
+  if (!h) return bad(res, '내역을 찾을 수 없습니다.', 404);
+  if (h.status === 'refunded') return bad(res, '이미 환불 처리된 건입니다.');
+
+  const refundAmount = Math.abs(h.amount);
+  const m = db.members[h.mid];
+  if (m) {
+    m.points += refundAmount;
+  }
+
+  // 재고 복구
+  if (h.items && typeof h.items === 'object') {
+    for (const [pid, q] of Object.entries(h.items)) {
+      if (db.sold[pid]) {
+        db.sold[pid] = Math.max(0, db.sold[pid] - q);
+      }
+    }
+  }
+
+  h.status = 'refunded';
+  if (m) {
+    log(m, '환불', refundAmount, `환불 완료 (${h.detail})`);
+  }
+  save();
+  res.json({ ok: true, member: m ? publicMember(m) : null });
+});
+app.post('/api/admin/history/:id/refund-reject', auth('admin'), (req, res) => {
+  const h = db.history.find(x => x.id === req.params.id);
+  if (!h) return bad(res, '내역을 찾을 수 없습니다.', 404);
+  if (h.status !== 'refund_pending') return bad(res, '환불 대기 상태가 아닙니다.');
+
+  h.status = 'pending'; // 다시 지급 대기 상태로 복귀
+  save();
+  res.json({ ok: true, status: 'pending' });
 });
 app.post('/api/admin/members', auth('admin'), (req, res) => {
   const b = req.body || {};

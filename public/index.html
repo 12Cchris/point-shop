@@ -59,6 +59,9 @@
   .badge.pending:hover { background:#ffe8a1; }
   .badge.done { background:#d4edda; color:#155724; border:1px solid #c3e6cb; }
   .badge.done:hover { background:#c3e6cb; }
+  .badge.refund-wait { background:#ffe8d6; color:#b8452a; border:1px solid #f9cb9c; font-weight:700; animation:pulse 1.8s infinite; }
+  .badge.refunded { background:#e2e3e5; color:#555; border:1px solid #d6d8db; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.7} }
 
   .modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,0.55); display:flex; align-items:center; justify-content:center; z-index:100; padding:20px; }
   .modal-box { background:var(--card); border:1px solid var(--line); border-radius:4px; max-width:440px; width:100%; padding:24px; box-shadow:0 10px 30px rgba(0,0,0,0.15); }
@@ -269,13 +272,23 @@ function vShop() {
     <div>
       <div class="sec"><h2>상품</h2><div class="grid">${cards || '<div class="empty">등록된 상품이 없습니다.</div>'}</div></div>
       <div class="sec"><h2>내 구매 내역</h2>${myHistory.length ? `<div class="tw"><table>
-        <tr><th>날짜</th><th>내용</th><th>지급 상태</th><th class="r">사용</th><th class="r">잔액</th></tr>
+        <tr><th>날짜</th><th>내용</th><th>상태</th><th class="r">사용</th><th class="r">잔액</th></tr>
         ${myHistory.map(h => {
-          const isDone = h.status === 'done';
+          let statusHtml = '';
+          if (h.status === 'refunded') {
+            statusHtml = `<span class="badge refunded">↩️ 환불 완료</span>`;
+          } else if (h.status === 'refund_pending') {
+            statusHtml = `<span class="badge refund-wait">🚨 환불 대기 중</span>`;
+          } else if (h.status === 'done') {
+            statusHtml = `<span class="badge done">✅ 지급 완료</span>`;
+          } else {
+            statusHtml = `<span class="badge pending">⏳ 준비 중</span>
+              <button class="linkbtn" style="margin-left:6px;font-size:12px;color:var(--accent)" onclick="requestRefund('${h.id}')">환불 요청</button>`;
+          }
           return `<tr>
             <td class="mute">${esc(h.t)}</td>
             <td>${esc(h.detail)}</td>
-            <td><span class="badge ${isDone ? 'done' : 'pending'}">${isDone ? '✅ 지급 완료' : '⏳ 준비 중'}</span></td>
+            <td>${statusHtml}</td>
             <td class="r num minus">${fmt(h.amount)}</td>
             <td class="r num">${fmt(h.balance)}</td>
           </tr>`;
@@ -331,6 +344,16 @@ async function checkout() {
     ok(`구매 완료 — ${d.detail} (남은 포인트 ${fmt(me.points)} P)`);
   } catch (err) { flash = { text:err.message }; await refreshMe(true).catch(()=>{}); }
   busy = false; render();
+}
+
+async function requestRefund(historyId) {
+  if (!confirm('이 구매 건의 환불을 요청할까요?\n(관리자가 승인하면 포인트가 반환되고 재고가 복구됩니다)')) return;
+  try {
+    await api('/api/refund-request', { method:'POST', body:{ historyId } }, 'member');
+    await refreshMe(true);
+    ok('환불을 요청했습니다. 관리자 승인을 기다려주세요.');
+  } catch (err) { fail(err); }
+  render();
 }
 
 /* ============================================================
@@ -553,45 +576,75 @@ function aHistory() {
   const names = [...new Set(adm.history.map(h => h.name))];
   let list = adm.history;
   if (histFilter !== 'all') list = list.filter(h => h.name === histFilter);
-  if (payFilter === 'pending') list = list.filter(h => h.type === '구매' && h.status === 'pending');
+  if (payFilter === 'pending') list = list.filter(h => h.type === '구매' && (h.status === 'pending' || !h.status));
+  if (payFilter === 'refund_pending') list = list.filter(h => h.status === 'refund_pending');
   if (payFilter === 'done') list = list.filter(h => h.type === '구매' && h.status === 'done');
+  if (payFilter === 'refunded') list = list.filter(h => h.status === 'refunded');
 
-  const pendingCount = adm.history.filter(h => h.type === '구매' && h.status === 'pending').length;
+  const pendingCount = adm.history.filter(h => h.type === '구매' && (h.status === 'pending' || !h.status)).length;
+  const refundCount = adm.history.filter(h => h.status === 'refund_pending').length;
 
   return `
   <div class="sec">
-    <div class="row2" style="margin-bottom:16px;align-items:center;justify-content:space-between">
-      <div class="row2" style="gap:10px">
+    ${refundCount > 0 ? `
+      <div class="flash" style="border-color:var(--accent);background:#fff3eb;margin-bottom:18px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+        <span>🚨 <b>승인 대기 중인 환불 요청이 ${refundCount}건</b> 있습니다!</span>
+        <button class="btn sm danger" onclick="payFilter='refund_pending';render()">환불 요청 모아보기</button>
+      </div>
+    ` : ''}
+    <div class="row2" style="margin-bottom:16px;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
+      <div class="row2" style="gap:10px;flex-wrap:wrap">
         <select onchange="histFilter=this.value;render()" style="width:auto">
           <option value="all">전체 회원</option>
           ${names.map(n => `<option ${n===histFilter?'selected':''} value="${esc(n)}">${esc(n)}</option>`).join('')}
         </select>
         <select onchange="payFilter=this.value;render()" style="width:auto">
-          <option value="all" ${payFilter==='all'?'selected':''}>전체 구분</option>
+          <option value="all" ${payFilter==='all'?'selected':''}>전체 상태 구분</option>
+          <option value="refund_pending" ${payFilter==='refund_pending'?'selected':''}>🚨 환불 대기 (${refundCount}건)</option>
           <option value="pending" ${payFilter==='pending'?'selected':''}>⏳ 지급 대기 (${pendingCount}건)</option>
           <option value="done" ${payFilter==='done'?'selected':''}>✅ 지급 완료</option>
+          <option value="refunded" ${payFilter==='refunded'?'selected':''}>↩️ 환불 완료</option>
         </select>
       </div>
-      ${pendingCount > 0 ? `<span style="font-size:13px;color:var(--accent);font-weight:700">미지급 구매 ${pendingCount}건 대기 중</span>` : ''}
+      <div style="font-size:13px;color:var(--mute)">
+        ${refundCount > 0 ? `<b style="color:var(--accent);margin-right:10px">환불대기 ${refundCount}건</b>` : ''}
+        ${pendingCount > 0 ? `<span>미지급 ${pendingCount}건</span>` : ''}
+      </div>
     </div>
     ${list.length ? `<div class="tw"><table>
-      <tr><th>시간</th><th>회원</th><th>구분</th><th class="r">포인트</th><th>내용</th><th>지급 상태</th><th class="r">잔액</th></tr>
+      <tr><th>시간</th><th>회원</th><th>구분</th><th class="r">포인트</th><th>내용</th><th>지급/환불 상태</th><th class="r">잔액</th></tr>
       ${list.map(h => {
         const isBuy = h.type === '구매';
-        const isDone = h.status === 'done';
+        let statusCol = '<span class="mute">-</span>';
+        if (isBuy) {
+          if (h.status === 'refund_pending') {
+            statusCol = `
+              <div>
+                <span class="badge refund-wait">🚨 환불 대기</span>
+                <div style="display:flex;gap:4px;margin-top:4px">
+                  <button class="btn sm" style="padding:2px 8px;font-size:12px;background:var(--ok);border-color:var(--ok)" onclick="approveRefund('${h.id}')">승인</button>
+                  <button class="btn line sm" style="padding:2px 8px;font-size:12px" onclick="rejectRefund('${h.id}')">거절</button>
+                </div>
+              </div>`;
+          } else if (h.status === 'refunded') {
+            statusCol = `<span class="badge refunded">↩️ 환불 완료</span>`;
+          } else if (h.status === 'done') {
+            statusCol = `<span class="badge done" onclick="toggleStatus('${h.id}')" title="클릭하여 지급 대기로 변경">✅ 지급 완료</span>`;
+          } else {
+            statusCol = `
+              <div style="display:flex;align-items:center;gap:6px">
+                <span class="badge pending" onclick="toggleStatus('${h.id}')" title="클릭하여 지급 완료로 변경">⏳ 지급 대기</span>
+                <button class="linkbtn" style="font-size:11px;color:var(--accent)" onclick="approveRefund('${h.id}')" title="관리자 직접 환불">환불</button>
+              </div>`;
+          }
+        }
         return `<tr>
           <td class="mute" style="white-space:nowrap">${esc(h.t)}</td>
           <td><b>${esc(h.name)}</b></td>
           <td>${esc(h.type)}</td>
           <td class="r num ${h.amount>=0?'plus':'minus'}">${h.amount>=0?'+':''}${fmt(h.amount)}</td>
           <td>${esc(h.detail)}</td>
-          <td>
-            ${isBuy ? `
-              <span class="badge ${isDone ? 'done' : 'pending'}" onclick="toggleStatus('${h.id}')" title="클릭하여 지급 상태 변경">
-                ${isDone ? '✅ 지급 완료' : '⏳ 지급 대기'}
-              </span>
-            ` : '<span class="mute">-</span>'}
-          </td>
+          <td>${statusCol}</td>
           <td class="r num">${fmt(h.balance)}</td>
         </tr>`;
       }).join('')}
@@ -606,6 +659,26 @@ async function toggleStatus(id) {
     await loadAdmin();
     render();
   } catch (err) { flash = { text:err.message }; render(); }
+}
+
+async function approveRefund(id) {
+  if (!confirm('이 구매 건의 환불을 승인할까요?\n회원에게 포인트가 즉시 반환되고 상품 재고가 복구됩니다.')) return;
+  try {
+    await api(`/api/admin/history/${id}/refund-approve`, { method:'POST' }, 'admin');
+    await loadAdmin();
+    ok('환불을 승인하고 포인트를 반환했습니다.');
+  } catch (err) { fail(err); }
+  render();
+}
+
+async function rejectRefund(id) {
+  if (!confirm('환불 요청을 거절하고 지급 대기 상태로 유지할까요?')) return;
+  try {
+    await api(`/api/admin/history/${id}/refund-reject`, { method:'POST' }, 'admin');
+    await loadAdmin();
+    ok('환불 요청을 거절했습니다.');
+  } catch (err) { fail(err); }
+  render();
 }
 
 function qrModalHtml() {
