@@ -1,0 +1,16 @@
+{
+  "name": "point-shop",
+  "version": "2.0.0",
+  "description": "포인트 상점 - 관리자가 포인트를 지급하고 회원이 각자 기기로 접속해 구매",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "firebase-admin": "^14.5.0"
+  }
+}
