@@ -3,6 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="manifest" href="/manifest.json">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#f4f0e8">
 <title>포인트 상점</title>
 <style>
   :root {
@@ -49,6 +53,16 @@
 
   .flash { padding:10px 14px; border-left:3px solid var(--accent); background:var(--card); margin-bottom:22px; font-size:14px; }
   .flash.ok { border-color:var(--ok); }
+
+  .badge { padding:3px 8px; border-radius:12px; font-size:12px; cursor:pointer; font-weight:600; display:inline-flex; align-items:center; gap:4px; text-decoration:none; }
+  .badge.pending { background:#fff3cd; color:#856404; border:1px solid #ffeeba; }
+  .badge.pending:hover { background:#ffe8a1; }
+  .badge.done { background:#d4edda; color:#155724; border:1px solid #c3e6cb; }
+  .badge.done:hover { background:#c3e6cb; }
+
+  .modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,0.55); display:flex; align-items:center; justify-content:center; z-index:100; padding:20px; }
+  .modal-box { background:var(--card); border:1px solid var(--line); border-radius:4px; max-width:440px; width:100%; padding:24px; box-shadow:0 10px 30px rgba(0,0,0,0.15); }
+  .modal-box h3 { margin:0 0 14px; font-size:18px; }
 
   .login { max-width:340px; padding-top:40px; }
   .login h1 { font-size:24px; margin:0 0 6px; line-height:1.3; }
@@ -157,7 +171,9 @@ function go(v) { view = v; cart = {}; render(); }
 /* ---------- 자동 로그아웃 ---------- */
 function resetIdle() {
   clearTimeout(idleTimer);
-  if (view === 'shop') idleTimer = setTimeout(() => { logout('오랫동안 사용하지 않아 로그아웃되었습니다.'); }, IDLE_SEC * 1000);
+  const isRemember = localStorage.getItem('ps.remember') === '1';
+  const sec = isRemember ? 1800 : IDLE_SEC; // 기억하기 체크 시 30분, 미체크 시 2분
+  if (view === 'shop') idleTimer = setTimeout(() => { logout('오랫동안 사용하지 않아 로그아웃되었습니다.'); }, sec * 1000);
 }
 ['click','keydown','touchstart','mousemove'].forEach(e => document.addEventListener(e, resetIdle));
 setInterval(() => { if (view === 'shop' && !busy) refreshMe(true); }, 20000);
@@ -166,24 +182,45 @@ setInterval(() => { if (view === 'shop' && !busy) refreshMe(true); }, 20000);
    회원 화면
    ============================================================ */
 function vLogin() {
+  const savedName = localStorage.getItem('ps.savedName') || '';
+  const savedCode = localStorage.getItem('ps.savedCode') || '';
+  const isRemember = localStorage.getItem('ps.remember') === '1';
   return `
   <div class="login">
     <h1>이름을 입력하고<br>들어오세요</h1>
     <p>보유 포인트로 상품을 살 수 있어요.</p>
     <form onsubmit="doLogin(event)">
       <label>이름</label>
-      <input type="text" id="lname" data-focus autocomplete="off">
+      <input type="text" id="lname" value="${esc(savedName)}" data-focus autocomplete="off">
       <label>확인 코드 <span class="mute">(관리자에게 받은 코드)</span></label>
-      <input type="password" id="lcode" autocomplete="off">
+      <input type="password" id="lcode" value="${esc(savedCode)}" autocomplete="off">
+      <div style="margin-top:12px">
+        <label style="display:inline-flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;color:var(--mute)">
+          <input type="checkbox" id="lremember" ${isRemember ? 'checked' : ''} style="width:auto;margin:0">
+          이 기기에서 정보 기억하기 (로그인 유지)
+        </label>
+      </div>
       <button class="btn">입장</button>
     </form>
   </div>`;
 }
 async function doLogin(e) {
   e.preventDefault();
+  const name = $('lname').value.trim();
+  const code = $('lcode').value.trim();
+  const rem = $('lremember').checked;
   try {
-    const d = await api('/api/login', { method:'POST', body:{ name:$('lname').value, code:$('lcode').value } });
+    const d = await api('/api/login', { method:'POST', body:{ name, code } });
     tok.m = d.token;
+    if (rem) {
+      localStorage.setItem('ps.savedName', name);
+      localStorage.setItem('ps.savedCode', code);
+      localStorage.setItem('ps.remember', '1');
+    } else {
+      localStorage.removeItem('ps.savedName');
+      localStorage.removeItem('ps.savedCode');
+      localStorage.removeItem('ps.remember');
+    }
     await refreshMe(); go('shop'); resetIdle();
   } catch (err) { fail(err); }
 }
@@ -232,8 +269,17 @@ function vShop() {
     <div>
       <div class="sec"><h2>상품</h2><div class="grid">${cards || '<div class="empty">등록된 상품이 없습니다.</div>'}</div></div>
       <div class="sec"><h2>내 구매 내역</h2>${myHistory.length ? `<div class="tw"><table>
-        <tr><th>날짜</th><th>내용</th><th class="r">사용</th><th class="r">잔액</th></tr>
-        ${myHistory.map(h => `<tr><td class="mute">${esc(h.t)}</td><td>${esc(h.detail)}</td><td class="r num minus">${fmt(h.amount)}</td><td class="r num">${fmt(h.balance)}</td></tr>`).join('')}
+        <tr><th>날짜</th><th>내용</th><th>지급 상태</th><th class="r">사용</th><th class="r">잔액</th></tr>
+        ${myHistory.map(h => {
+          const isDone = h.status === 'done';
+          return `<tr>
+            <td class="mute">${esc(h.t)}</td>
+            <td>${esc(h.detail)}</td>
+            <td><span class="badge ${isDone ? 'done' : 'pending'}">${isDone ? '✅ 지급 완료' : '⏳ 준비 중'}</span></td>
+            <td class="r num minus">${fmt(h.amount)}</td>
+            <td class="r num">${fmt(h.balance)}</td>
+          </tr>`;
+        }).join('')}
       </table></div>` : '<div class="empty">아직 구매한 내역이 없어요.</div>'}</div>
     </div>
     <div class="side">${cartHtml()}</div>
@@ -290,6 +336,10 @@ async function checkout() {
 /* ============================================================
    관리자 화면
    ============================================================ */
+let qrModalOpen = false;
+let editProdModal = null;
+let payFilter = 'all';
+
 function vAdminLogin() {
   return `
   <div class="login">
@@ -318,11 +368,21 @@ async function adminDo(path, opt, msg) {
 function adminLogout() { tok.a = null; adm = null; go('login'); }
 
 function vAdmin() {
-  const tabs = [['members','회원·포인트'],['history','전체 내역'],['stock','상품 현황'],['data','데이터']];
-  const body = { members:aMembers, history:aHistory, stock:aStock, data:aData }[tab]();
+  const tabs = [
+    ['members','회원·포인트'],
+    ['products','상품 관리 (등록/수정)'],
+    ['history','전체 내역 & 지급 관리'],
+    ['data','데이터/백업']
+  ];
+  const body = { members:aMembers, products:aProducts, history:aHistory, data:aData }[tab]();
   return `
-  <div class="tabs">${tabs.map(([k,l]) => `<button class="tab ${tab===k?'on':''}" onclick="tab='${k}';render()">${l}</button>`).join('')}</div>
-  ${flashHtml()}${body}`;
+  <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:20px">
+    <div class="tabs" style="margin-bottom:0">${tabs.map(([k,l]) => `<button class="tab ${tab===k?'on':''}" onclick="tab='${k}';render()">${l}</button>`).join('')}</div>
+    <button class="btn line sm" onclick="qrModalOpen=true;render()">📱 회원 접속 QR코드</button>
+  </div>
+  ${flashHtml()}${body}
+  ${qrModalHtml()}
+  ${editProdModalHtml()}`;
 }
 function aMembers() {
   const list = adm.members;
@@ -374,37 +434,180 @@ function delMember(id, name) {
   if (!confirm(`${name} 회원을 삭제할까요? (내역은 남습니다)`)) return;
   adminDo(`/api/admin/members/${id}`, { method:'DELETE' }, '삭제했습니다.');
 }
-function aHistory() {
-  const names = [...new Set(adm.history.map(h => h.name))];
-  const list = histFilter === 'all' ? adm.history : adm.history.filter(h => h.name === histFilter);
+
+/* 상품 관리 탭 */
+function aProducts() {
   return `
   <div class="sec">
-    <div class="row2" style="max-width:260px;margin-bottom:14px">
-      <select onchange="histFilter=this.value;render()">
-        <option value="all">전체 회원</option>
-        ${names.map(n => `<option ${n===histFilter?'selected':''} value="${esc(n)}">${esc(n)}</option>`).join('')}
-      </select>
-    </div>
-    ${list.length ? `<div class="tw"><table>
-      <tr><th>시간</th><th>회원</th><th>구분</th><th class="r">포인트</th><th>내용</th><th class="r">잔액</th></tr>
-      ${list.map(h => `<tr><td class="mute">${esc(h.t)}</td><td>${esc(h.name)}</td><td>${esc(h.type)}</td>
-        <td class="r num ${h.amount>=0?'plus':'minus'}">${h.amount>=0?'+':''}${fmt(h.amount)}</td>
-        <td>${esc(h.detail)}</td><td class="r num">${fmt(h.balance)}</td></tr>`).join('')}
-    </table></div>` : '<div class="empty">내역이 없습니다.</div>'}
+    <h2>새 상품 등록</h2>
+    <form class="addform" style="grid-template-columns:1.2fr 1fr 1fr 1.2fr auto" onsubmit="addProduct(event)">
+      <div><label>상품명</label><input type="text" id="p_name" required autocomplete="off"></div>
+      <div><label>가격(P)</label><input type="number" id="p_price" min="0" required placeholder="예: 300"></div>
+      <div><label>재고 (비우면 무제한)</label><input type="number" id="p_stock" min="0" placeholder="무제한"></div>
+      <div><label>설명</label><input type="text" id="p_desc" placeholder="간단 설명" autocomplete="off"></div>
+      <button class="btn">상품 등록</button>
+    </form>
+  </div>
+  <div class="sec">
+    <h2>등록된 상품 ${adm.products.length}종</h2>
+    ${adm.products.length ? `<div class="tw"><table>
+      <tr><th>상품명</th><th class="r">가격</th><th class="r">재고</th><th class="r">판매량</th><th>설명</th><th class="r">관리</th></tr>
+      ${adm.products.map(p => `<tr>
+        <td><b>${esc(p.name)}</b></td>
+        <td class="r num">${fmt(p.price)} P</td>
+        <td class="r num">${p.stock == null ? '<span class="mute">무제한</span>' : (p.remain <= 0 ? '<span class="minus">품절(0)</span>' : p.remain + '개')}</td>
+        <td class="r num">${p.sold || 0}</td>
+        <td class="mute" style="font-size:13px">${esc(p.desc || '-')}</td>
+        <td class="r">
+          <button class="btn line sm" onclick="openEditProd('${p.id}')">수정</button>
+          <button class="btn danger sm" onclick="delProd('${p.id}','${esc(p.name)}')">삭제</button>
+        </td>
+      </tr>`).join('')}
+    </table></div>` : '<div class="empty">등록된 상품이 없습니다. 위에서 추가해 보세요.</div>'}
   </div>`;
 }
-function aStock() {
-  return `<div class="sec"><div class="tw"><table>
-    <tr><th>상품</th><th class="r">가격</th><th class="r">판매</th><th class="r">남은 수량</th></tr>
-    ${adm.products.map(p => `<tr><td>${esc(p.name)}</td><td class="r num">${fmt(p.price)} P</td>
-      <td class="r num">${p.sold}</td><td class="r num">${p.remain == null ? '무제한' : p.remain}</td></tr>`).join('')}
-  </table></div>
-  <p class="mute" style="font-size:13px">상품은 서버의 products.js 파일에서 추가·수정합니다.</p></div>`;
+async function addProduct(e) {
+  e.preventDefault();
+  const name = $('p_name').value.trim();
+  const price = $('p_price').value;
+  const stock = $('p_stock').value;
+  const desc = $('p_desc').value.trim();
+  try {
+    await api('/api/admin/products', { method:'POST', body:{ name, price, stock, desc } }, 'admin');
+    await loadAdmin(); ok(`'${name}' 상품을 추가했습니다.`);
+  } catch (err) { flash = { text:err.message }; }
+  render();
+}
+function delProd(id, name) {
+  if (!confirm(`'${name}' 상품을 삭제할까요?`)) return;
+  adminDo(`/api/admin/products/${id}`, { method:'DELETE' }, `'${name}' 상품을 삭제했습니다.`);
+}
+function openEditProd(id) {
+  const p = adm.products.find(x => x.id === id);
+  if (!p) return;
+  editProdModal = { ...p };
+  render();
+}
+function editProdModalHtml() {
+  if (!editProdModal) return '';
+  const p = editProdModal;
+  return `
+  <div class="modal-overlay" onclick="if(event.target===this){editProdModal=null;render();}">
+    <div class="modal-box">
+      <h3>상품 수정</h3>
+      <form onsubmit="saveEditProd(event)">
+        <div style="margin-bottom:12px"><label class="mute" style="font-size:12px">상품명</label>
+          <input type="text" id="ep_name" value="${esc(p.name)}" required></div>
+        <div style="margin-bottom:12px"><label class="mute" style="font-size:12px">가격(P)</label>
+          <input type="number" id="ep_price" value="${p.price}" min="0" required></div>
+        <div style="margin-bottom:12px"><label class="mute" style="font-size:12px">재고 (비우면 무제한)</label>
+          <input type="number" id="ep_stock" value="${p.stock == null ? '' : p.stock}" min="0" placeholder="무제한"></div>
+        <div style="margin-bottom:16px"><label class="mute" style="font-size:12px">설명</label>
+          <input type="text" id="ep_desc" value="${esc(p.desc || '')}"></div>
+        <div class="row2" style="justify-content:flex-end">
+          <button type="button" class="btn line" onclick="editProdModal=null;render()">취소</button>
+          <button class="btn">저장</button>
+        </div>
+      </form>
+    </div>
+  </div>`;
+}
+async function saveEditProd(e) {
+  e.preventDefault();
+  const id = editProdModal.id;
+  const name = $('ep_name').value.trim();
+  const price = $('ep_price').value;
+  const stock = $('ep_stock').value;
+  const desc = $('ep_desc').value.trim();
+  try {
+    await api(`/api/admin/products/${id}`, { method:'PUT', body:{ name, price, stock, desc } }, 'admin');
+    editProdModal = null;
+    await loadAdmin(); ok('상품 정보를 수정했습니다.');
+  } catch (err) { flash = { text:err.message }; }
+  render();
+}
+
+/* 내역 및 지급 관리 탭 */
+function aHistory() {
+  const names = [...new Set(adm.history.map(h => h.name))];
+  let list = adm.history;
+  if (histFilter !== 'all') list = list.filter(h => h.name === histFilter);
+  if (payFilter === 'pending') list = list.filter(h => h.type === '구매' && h.status === 'pending');
+  if (payFilter === 'done') list = list.filter(h => h.type === '구매' && h.status === 'done');
+
+  const pendingCount = adm.history.filter(h => h.type === '구매' && h.status === 'pending').length;
+
+  return `
+  <div class="sec">
+    <div class="row2" style="margin-bottom:16px;align-items:center;justify-content:space-between">
+      <div class="row2" style="gap:10px">
+        <select onchange="histFilter=this.value;render()" style="width:auto">
+          <option value="all">전체 회원</option>
+          ${names.map(n => `<option ${n===histFilter?'selected':''} value="${esc(n)}">${esc(n)}</option>`).join('')}
+        </select>
+        <select onchange="payFilter=this.value;render()" style="width:auto">
+          <option value="all" ${payFilter==='all'?'selected':''}>전체 구분</option>
+          <option value="pending" ${payFilter==='pending'?'selected':''}>⏳ 지급 대기 (${pendingCount}건)</option>
+          <option value="done" ${payFilter==='done'?'selected':''}>✅ 지급 완료</option>
+        </select>
+      </div>
+      ${pendingCount > 0 ? `<span style="font-size:13px;color:var(--accent);font-weight:700">미지급 구매 ${pendingCount}건 대기 중</span>` : ''}
+    </div>
+    ${list.length ? `<div class="tw"><table>
+      <tr><th>시간</th><th>회원</th><th>구분</th><th class="r">포인트</th><th>내용</th><th>지급 상태</th><th class="r">잔액</th></tr>
+      ${list.map(h => {
+        const isBuy = h.type === '구매';
+        const isDone = h.status === 'done';
+        return `<tr>
+          <td class="mute" style="white-space:nowrap">${esc(h.t)}</td>
+          <td><b>${esc(h.name)}</b></td>
+          <td>${esc(h.type)}</td>
+          <td class="r num ${h.amount>=0?'plus':'minus'}">${h.amount>=0?'+':''}${fmt(h.amount)}</td>
+          <td>${esc(h.detail)}</td>
+          <td>
+            ${isBuy ? `
+              <span class="badge ${isDone ? 'done' : 'pending'}" onclick="toggleStatus('${h.id}')" title="클릭하여 지급 상태 변경">
+                ${isDone ? '✅ 지급 완료' : '⏳ 지급 대기'}
+              </span>
+            ` : '<span class="mute">-</span>'}
+          </td>
+          <td class="r num">${fmt(h.balance)}</td>
+        </tr>`;
+      }).join('')}
+    </table></div>` : '<div class="empty">조건에 맞는 내역이 없습니다.</div>'}
+  </div>`;
+}
+
+async function toggleStatus(id) {
+  if (!id) return;
+  try {
+    await api(`/api/admin/history/${id}/status`, { method:'POST' }, 'admin');
+    await loadAdmin();
+    render();
+  } catch (err) { flash = { text:err.message }; render(); }
+}
+
+function qrModalHtml() {
+  if (!qrModalOpen) return '';
+  const url = window.location.origin;
+  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(url)}`;
+  return `
+  <div class="modal-overlay" onclick="if(event.target===this){qrModalOpen=false;render();}">
+    <div class="modal-box" style="text-align:center">
+      <h3>📱 상점 접속용 QR코드</h3>
+      <p class="mute" style="font-size:13px;margin:0 0 16px">다른 기기(스마트폰) 카메라로 비추면 바로 접속됩니다.</p>
+      <div style="display:inline-block;padding:12px;background:#fff;border:1px solid var(--line);border-radius:6px;margin-bottom:14px">
+        <img src="${qrUrl}" alt="QR Code" style="width:220px;height:220px;display:block">
+      </div>
+      <div style="word-break:break-all;font-size:12px;color:var(--mute);margin-bottom:18px"><code class="cd">${esc(url)}</code></div>
+      <button class="btn" onclick="qrModalOpen=false;render()">닫기</button>
+    </div>
+  </div>`;
 }
 function aData() {
   return `<div class="sec">
     <h2>백업</h2>
-    <p class="mute" style="margin-top:0;font-size:13px">무료 호스팅은 서버가 재시작되면 데이터가 지워질 수 있어요. 주기적으로 내보내기로 백업해 두세요.</p>
+    <p class="mute" style="margin-top:0;font-size:13px">데이터는 Firebase에 실시간 영구 보존됩니다. 필요 시 별도로 JSON 백업 파일을 저장할 수 있습니다.</p>
     <div class="row2" style="margin-bottom:26px">
       <button class="btn line" onclick="exportData()">내보내기</button>
       <button class="btn line" onclick="$('imp').click()">가져오기</button>
@@ -462,8 +665,23 @@ function render() {
     const info = await api('/api/info');
     $('shopName').textContent = info.name; $('ver').textContent = 'v' + info.version; document.title = info.name;
   } catch (e) {}
-  if (tok.m) { try { await refreshMe(true); view = 'shop'; resetIdle(); } catch (e) { tok.m = null; } }
-  else if (tok.a) { try { await loadAdmin(); view = 'admin'; } catch (e) { tok.a = null; } }
+  if (tok.m) {
+    try { await refreshMe(true); view = 'shop'; resetIdle(); } catch (e) { tok.m = null; }
+  } else if (tok.a) {
+    try { await loadAdmin(); view = 'admin'; } catch (e) { tok.a = null; }
+  } else if (localStorage.getItem('ps.remember') === '1') {
+    const sName = localStorage.getItem('ps.savedName');
+    const sCode = localStorage.getItem('ps.savedCode');
+    if (sName && sCode) {
+      try {
+        const d = await api('/api/login', { method:'POST', body:{ name:sName, code:sCode } });
+        tok.m = d.token;
+        await refreshMe(true);
+        view = 'shop';
+        resetIdle();
+      } catch (e) {}
+    }
+  }
   render();
 })();
 </script>

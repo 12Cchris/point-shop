@@ -1,0 +1,9 @@
+{
+  "name": "포인트 상점",
+  "short_name": "포인트상점",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f4f0e8",
+  "theme_color": "#f4f0e8",
+  "description": "포인트 상점 - 모바일 웹앱"
+}

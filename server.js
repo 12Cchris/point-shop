@@ -48,14 +48,25 @@ try {
 }
 
 /* ---------- 데이터 로드 / 저장 ---------- */
-let db = { members: {}, history: [], sold: {} };
+let db = { members: {}, history: [], sold: {}, products: [] };
 
 function loadLocal() {
   try {
     const d = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-    if (d && d.members) return { members: d.members, history: d.history || [], sold: d.sold || {} };
+    if (d && d.members) return { members: d.members, history: d.history || [], sold: d.sold || {}, products: d.products || [] };
   } catch (e) {}
-  return { members: {}, history: [], sold: {} };
+  return { members: {}, history: [], sold: {}, products: [] };
+}
+
+function ensureDefaults() {
+  if (!Array.isArray(db.products) || !db.products.length) {
+    db.products = PRODUCTS.map(p => ({ ...p }));
+  }
+  // 기존 히스토리에 id 및 status 기본값 보장
+  (db.history || []).forEach(h => {
+    if (!h.id) h.id = 'h' + crypto.randomBytes(6).toString('hex');
+    if (h.type === '구매' && !h.status) h.status = 'pending';
+  });
 }
 
 async function initData() {
@@ -64,12 +75,13 @@ async function initData() {
       const snap = await firestoreDoc.get();
       if (snap.exists) {
         const d = snap.data();
-        db = { members: d.members || {}, history: d.history || [], sold: d.sold || {} };
-        console.log(`✔ Firebase에서 데이터를 불러왔습니다. (회원 ${Object.keys(db.members).length}명, 내역 ${db.history.length}건)`);
+        db = { members: d.members || {}, history: d.history || [], sold: d.sold || {}, products: d.products || [] };
+        ensureDefaults();
+        console.log(`✔ Firebase에서 데이터를 불러왔습니다. (회원 ${Object.keys(db.members).length}명, 상품 ${db.products.length}종, 내역 ${db.history.length}건)`);
         return;
       } else {
-        // Firebase에 기존 로컬 파일 데이터가 있다면 마이그레이션
         db = loadLocal();
+        ensureDefaults();
         await firestoreDoc.set(db);
         console.log('✔ 로컬 데이터를 Firebase에 최초 동기화했습니다.');
         return;
@@ -79,6 +91,7 @@ async function initData() {
     }
   }
   db = loadLocal();
+  ensureDefaults();
 }
 
 function save() {
@@ -100,12 +113,24 @@ function save() {
 const uid = () => 'm' + crypto.randomBytes(5).toString('hex');
 const nowStr = () => new Date().toLocaleString('ko-KR', { hour12: false, timeZone: 'Asia/Seoul' });
 function log(m, type, amount, detail) {
-  db.history.unshift({ t: nowStr(), mid: m.id, name: m.name, type, amount, detail, balance: m.points });
+  const item = {
+    id: 'h' + crypto.randomBytes(6).toString('hex'),
+    t: nowStr(),
+    mid: m.id,
+    name: m.name,
+    type,
+    amount,
+    detail,
+    balance: m.points,
+  };
+  if (type === '구매') item.status = 'pending';
+  db.history.unshift(item);
   if (db.history.length > 2000) db.history.length = 2000;
 }
+const allProducts = () => db.products || PRODUCTS;
 const remain = p => (p.stock == null ? null : Math.max(0, p.stock - (db.sold[p.id] || 0)));
-const publicProducts = () => PRODUCTS.map(p => ({
-  id: p.id, name: p.name, price: p.price, desc: p.desc || '', img: p.img || '', remain: remain(p),
+const publicProducts = () => allProducts().map(p => ({
+  id: p.id, name: p.name, price: p.price, desc: p.desc || '', img: p.img || '', remain: remain(p), stock: p.stock,
 }));
 const publicMember = m => ({ id: m.id, name: m.name, points: m.points });
 
@@ -186,7 +211,7 @@ app.post('/api/buy', auth('member'), (req, res) => {
   let total = 0;
   const lines = [];
   for (const [id, q] of Object.entries(items)) {
-    const p = PRODUCTS.find(x => x.id === id);
+    const p = allProducts().find(x => x.id === id);
     const n = Number(q);
     if (!p || !Number.isInteger(n) || n < 1 || n > 99) return bad(res, '잘못된 상품입니다.');
     const r = remain(p);
@@ -214,8 +239,72 @@ app.get('/api/admin/state', auth('admin'), (req, res) => {
   res.json({
     members: Object.values(db.members),
     history: db.history.slice(0, 500),
-    products: PRODUCTS.map(p => ({ id: p.id, name: p.name, price: p.price, stock: p.stock == null ? null : p.stock, sold: db.sold[p.id] || 0, remain: remain(p) })),
+    products: allProducts().map(p => ({
+      id: p.id,
+      name: p.name,
+      price: p.price,
+      desc: p.desc || '',
+      img: p.img || '',
+      stock: p.stock == null ? null : p.stock,
+      sold: db.sold[p.id] || 0,
+      remain: remain(p)
+    })),
   });
+});
+app.post('/api/admin/products', auth('admin'), (req, res) => {
+  const b = req.body || {};
+  const name = String(b.name || '').trim();
+  const price = parseInt(b.price);
+  if (!name) return bad(res, '상품명을 입력하세요.');
+  if (isNaN(price) || price < 0) return bad(res, '가격을 0 이상 숫자로 입력하세요.');
+  const stock = (b.stock === '' || b.stock === null || isNaN(parseInt(b.stock))) ? null : Math.max(0, parseInt(b.stock));
+  const prod = {
+    id: 'p' + crypto.randomBytes(4).toString('hex'),
+    name,
+    price,
+    desc: String(b.desc || '').trim(),
+    stock,
+    img: String(b.img || '').trim(),
+  };
+  if (!Array.isArray(db.products)) db.products = [];
+  db.products.push(prod);
+  save();
+  res.json({ ok: true, product: prod });
+});
+app.put('/api/admin/products/:id', auth('admin'), (req, res) => {
+  const prod = allProducts().find(p => p.id === req.params.id);
+  if (!prod) return bad(res, '상품을 찾을 수 없습니다.', 404);
+  const b = req.body || {};
+  if (b.name !== undefined) {
+    const name = String(b.name || '').trim();
+    if (!name) return bad(res, '상품명을 입력하세요.');
+    prod.name = name;
+  }
+  if (b.price !== undefined) {
+    const price = parseInt(b.price);
+    if (isNaN(price) || price < 0) return bad(res, '가격을 0 이상 숫자로 입력하세요.');
+    prod.price = price;
+  }
+  if (b.desc !== undefined) prod.desc = String(b.desc || '').trim();
+  if (b.stock !== undefined) {
+    prod.stock = (b.stock === '' || b.stock === null || isNaN(parseInt(b.stock))) ? null : Math.max(0, parseInt(b.stock));
+  }
+  if (b.img !== undefined) prod.img = String(b.img || '').trim();
+  save();
+  res.json({ ok: true, product: prod });
+});
+app.delete('/api/admin/products/:id', auth('admin'), (req, res) => {
+  if (!Array.isArray(db.products)) db.products = [];
+  db.products = db.products.filter(p => p.id !== req.params.id);
+  save();
+  res.json({ ok: true });
+});
+app.post('/api/admin/history/:id/status', auth('admin'), (req, res) => {
+  const h = db.history.find(x => x.id === req.params.id);
+  if (!h) return bad(res, '내역을 찾을 수 없습니다.', 404);
+  h.status = h.status === 'done' ? 'pending' : 'done';
+  save();
+  res.json({ ok: true, status: h.status });
 });
 app.post('/api/admin/members', auth('admin'), (req, res) => {
   const b = req.body || {};
@@ -287,5 +376,16 @@ app.post('/api/admin/reset', auth('admin'), (req, res) => {
 });
 
 initData().then(() => {
-  app.listen(PORT, () => console.log(`포인트 상점 v${VERSION} → http://localhost:${PORT}`));
+  app.listen(PORT, () => {
+    console.log(`포인트 상점 v${VERSION} → http://localhost:${PORT}`);
+    // Render 무료 플랜 슬립 방지 (RENDER_EXTERNAL_URL 또는 APP_URL 설정 시 13분 주기 self-ping)
+    const APP_URL = process.env.APP_URL || process.env.RENDER_EXTERNAL_URL;
+    if (APP_URL) {
+      const pingUrl = APP_URL.replace(/\/+$/, '') + '/api/info';
+      setInterval(() => {
+        fetch(pingUrl).catch(() => {});
+      }, 13 * 60 * 1000).unref();
+      console.log(`✔ 자동 슬립 방지 활성화: 13분 주기 (${pingUrl})`);
+    }
+  });
 });
