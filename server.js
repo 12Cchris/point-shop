@@ -5,7 +5,8 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const admin = require('firebase-admin');
+const { initializeApp, cert } = require('firebase-admin/app');
+const { getFirestore } = require('firebase-admin/firestore');
 const PRODUCTS = require('./products');
 
 const VERSION = '2.1.0';
@@ -22,22 +23,22 @@ if (ADMIN_PIN === '1234') {
 /* ---------- Firebase 초기화 ---------- */
 let firestoreDoc = null;
 try {
-  let credential = null;
+  let serviceAccount = null;
   if (process.env.FIREBASE_SERVICE_ACCOUNT) {
     const raw = process.env.FIREBASE_SERVICE_ACCOUNT.trim();
     // 일반 JSON 또는 base64 인코딩 지원
     const jsonStr = raw.startsWith('{') ? raw : Buffer.from(raw, 'base64').toString('utf8');
-    credential = admin.credential.cert(JSON.parse(jsonStr));
+    serviceAccount = JSON.parse(jsonStr);
   } else {
     const keyPath = path.join(__dirname, 'serviceAccountKey.json');
     if (fs.existsSync(keyPath)) {
-      credential = admin.credential.cert(require(keyPath));
+      serviceAccount = require(keyPath);
     }
   }
 
-  if (credential) {
-    admin.initializeApp({ credential });
-    const fsDb = admin.firestore();
+  if (serviceAccount) {
+    const app = initializeApp({ credential: cert(serviceAccount) });
+    const fsDb = getFirestore(app);
     firestoreDoc = fsDb.collection('point_shop').doc('state');
     console.log('✔ Firebase Firestore 연동 성공 (영구 보존 활성화)');
   } else {
