@@ -33,6 +33,17 @@ echo [INFO] Git repository connected.
 echo.
 
 :GIT_READY
+:: 3. Check Changes
+git status --porcelain > nul 2>&1
+set HAS_CHANGES=
+for /f "tokens=*" %%i in ('git status --porcelain') do set HAS_CHANGES=1
+
+if not defined HAS_CHANGES (
+    echo [INFO] No modified files detected. (Already up to date)
+    echo.
+    goto PUSH_ONLY
+)
+
 echo [1/3] Adding changed files (git add) ...
 git add .
 echo.
@@ -44,12 +55,15 @@ if "%COMMIT_MSG%"=="" set COMMIT_MSG=%DEFAULT_MSG%
 echo.
 echo [2/3] Creating commit (git commit) ...
 git commit -m "%COMMIT_MSG%"
-
 echo.
+
+:PUSH_ONLY
 echo [3/3] Uploading to GitHub (git push) ...
 git push origin main
 if errorlevel 1 (
-    git push -u origin HEAD
+    echo [INFO] Retrying with pull rebase...
+    git pull origin main --rebase
+    git push origin main
 )
 
 if errorlevel 1 (
