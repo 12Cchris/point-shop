@@ -339,23 +339,44 @@ async function checkout() {
 let qrModalOpen = false;
 let editProdModal = null;
 let payFilter = 'all';
+let requireSecret = false;
+
+function getSavedSecret() {
+  const urlParam = new URLSearchParams(window.location.search).get('secret');
+  if (urlParam) {
+    sessionStorage.setItem('ps.adm_secret', urlParam);
+    return urlParam;
+  }
+  return sessionStorage.getItem('ps.adm_secret') || '';
+}
 
 function vAdminLogin() {
+  const curSecret = getSavedSecret();
   return `
   <div class="login">
-    <h1>관리자</h1>
-    <p>비밀번호를 입력해 주세요.</p>
+    <h1>관리자 로그인</h1>
+    <p>관리자 비밀번호와 보안 시크릿 키를 입력해 주세요.</p>
     <form onsubmit="doAdminLogin(event)">
-      <input type="password" id="apin" data-focus autocomplete="off">
-      <button class="btn">들어가기</button>
+      <label>관리자 비밀번호 (PIN)</label>
+      <input type="password" id="apin" data-focus autocomplete="off" placeholder="PIN 입력">
+
+      <label style="margin-top:14px">보안 시크릿 키 (Secret Key) ${requireSecret ? '<span style="color:var(--accent)">*필수</span>' : '<span class="mute">(설정된 경우)</span>'}</label>
+      <input type="password" id="asecret" value="${esc(curSecret)}" autocomplete="off" placeholder="보안 키 입력">
+      ${curSecret ? '<p class="mute" style="font-size:12px;margin:4px 0 0">✔ 보안 키가 주소에서 자동 적용되었습니다.</p>' : ''}
+
+      <button class="btn" style="margin-top:20px">들어가기</button>
     </form>
   </div>`;
 }
 async function doAdminLogin(e) {
   e.preventDefault();
+  const pin = $('apin').value;
+  const secret = $('asecret').value.trim();
   try {
-    const d = await api('/api/admin/login', { method:'POST', body:{ pin:$('apin').value } });
-    tok.a = d.token; tab = 'members';
+    const d = await api('/api/admin/login', { method:'POST', body:{ pin, secret } });
+    tok.a = d.token;
+    if (secret) sessionStorage.setItem('ps.adm_secret', secret);
+    tab = 'members';
     await loadAdmin(); go('admin');
   } catch (err) { fail(err); }
 }
@@ -664,6 +685,7 @@ function render() {
   try {
     const info = await api('/api/info');
     $('shopName').textContent = info.name; $('ver').textContent = 'v' + info.version; document.title = info.name;
+    requireSecret = Boolean(info.requireSecret);
   } catch (e) {}
   if (tok.m) {
     try { await refreshMe(true); view = 'shop'; resetIdle(); } catch (e) { tok.m = null; }

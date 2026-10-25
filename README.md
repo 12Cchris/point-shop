@@ -30,6 +30,8 @@ Firebase를 연동하면 **몇 달 동안 접속하지 않아도 비활성화나
    - Start Command: `npm start`
 3. **Environment** 탭에 환경변수 추가:
    - `ADMIN_PIN` : 나만의 관리자 비밀번호 (필수)
+   - `ADMIN_SECRET` : 관리자 2단계 보안 시크릿 키 (강력 추천, 예: `my-secret-key-1234`)
+   - `APP_URL` : Render 사이트 주소 (슬립 방지용, 예: `https://point-shop.onrender.com`)
    - `SHOP_NAME` : 상점 이름 (선택)
    - `FIREBASE_SERVICE_ACCOUNT` : 1단계에서 다운로드받은 **JSON 파일의 내용 전체**를 그대로 복사해서 값(Value)에 붙여넣기
 4. **Save Changes**를 누르면 배포가 시작되며 영구 무료 DB와 연동됩니다!

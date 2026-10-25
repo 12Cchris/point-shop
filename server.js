@@ -13,11 +13,15 @@ const VERSION = '2.1.0';
 const PORT = process.env.PORT || 3000;
 const SHOP_NAME = process.env.SHOP_NAME || '작은 상점';
 const ADMIN_PIN = process.env.ADMIN_PIN || '1234';
+const ADMIN_SECRET = (process.env.ADMIN_SECRET || '').trim();
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'data.json');
 
 if (ADMIN_PIN === '1234') {
   console.warn('⚠ 관리자 비밀번호가 기본값(1234)입니다. 환경변수 ADMIN_PIN 으로 꼭 바꿔주세요.');
+}
+if (ADMIN_SECRET) {
+  console.log('🔒 관리자 2단계 보안(ADMIN_SECRET) 활성화');
 }
 
 /* ---------- Firebase 초기화 ---------- */
@@ -182,7 +186,7 @@ app.use(express.json({ limit: '5mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 const bad = (res, msg, code = 400) => res.status(code).json({ error: msg });
 
-app.get('/api/info', (req, res) => res.json({ name: SHOP_NAME, version: VERSION }));
+app.get('/api/info', (req, res) => res.json({ name: SHOP_NAME, version: VERSION, requireSecret: Boolean(ADMIN_SECRET) }));
 app.get('/api/products', (req, res) => res.json(publicProducts()));
 
 /* 회원 */
@@ -233,7 +237,17 @@ app.post('/api/buy', auth('member'), (req, res) => {
 /* 관리자 */
 app.post('/api/admin/login', (req, res) => {
   if (locked(req.ip)) return bad(res, '시도가 너무 많아요. 5분 뒤에 다시 해주세요.', 429);
-  if (!same(ADMIN_PIN, (req.body || {}).pin || '')) { fail(req.ip); return bad(res, '비밀번호가 맞지 않습니다.', 401); }
+  const b = req.body || {};
+  const pin = String(b.pin || '');
+  const secret = String(b.secret || '').trim();
+
+  const pinOk = same(ADMIN_PIN, pin);
+  const secretOk = !ADMIN_SECRET || same(ADMIN_SECRET, secret);
+
+  if (!pinOk || !secretOk) {
+    fail(req.ip);
+    return bad(res, '비밀번호 또는 보안 시크릿 키가 맞지 않습니다.', 401);
+  }
   res.json({ token: newSession('admin') });
 });
 app.get('/api/admin/state', auth('admin'), (req, res) => {
