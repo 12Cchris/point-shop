@@ -299,18 +299,25 @@ app.post('/api/admin/login', (req, res) => {
   res.json({ token: newSession('admin') });
 });
 app.get('/api/admin/state', auth('admin'), (req, res) => {
+  const members = db.members && typeof db.members === 'object' && !Array.isArray(db.members) ? Object.values(db.members) : [];
+  const history = Array.isArray(db.history) ? db.history : [];
+  const sold = db.sold && typeof db.sold === 'object' ? db.sold : {};
+  const products = Array.isArray(allProducts()) ? allProducts().filter(p => p && typeof p === 'object' && !Array.isArray(p)) : [];
+  if (members.length !== Object.keys(db.members || {}).length || history !== db.history || sold !== db.sold || products.length !== (Array.isArray(allProducts()) ? allProducts().length : 0)) {
+    console.error('[DATA] Invalid state shape while building /api/admin/state; returning only valid entries.');
+  }
   res.json({
-    members: Object.values(db.members),
-    history: db.history.slice(0, 500),
-    products: allProducts().map(p => ({
+    members,
+    history: history.slice(0, 500),
+    products: products.map(p => ({
       id: p.id,
       name: p.name,
       price: p.price,
       desc: p.desc || '',
       img: p.img || '',
       stock: p.stock == null ? null : p.stock,
-      sold: db.sold[p.id] || 0,
-      remain: remain(p)
+      sold: sold[p.id] || 0,
+      remain: p.stock == null ? null : Math.max(0, p.stock - (sold[p.id] || 0))
     })),
   });
 });
