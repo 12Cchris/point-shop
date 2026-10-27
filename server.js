@@ -1,12 +1,11 @@
 /* 포인트 상점 서버 v2.1.0
    - 포인트·구매 검증은 전부 서버에서 합니다 (브라우저에서 조작 불가)
    - 데이터는 Firebase Firestore에 영구 보존되며, 미설정 시 로컬 data.json 에 저장됩니다 */
-const express = require('express');
+const express = require('./lib/http-app');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { initializeApp, cert } = require('firebase-admin/app');
-const { getFirestore } = require('firebase-admin/firestore');
+const { FirestoreClient } = require('./lib/firestore');
 const PRODUCTS = require('./products');
 
 const VERSION = '2.1.0';
@@ -41,9 +40,7 @@ try {
   }
 
   if (serviceAccount) {
-    const app = initializeApp({ credential: cert(serviceAccount) });
-    const fsDb = getFirestore(app);
-    firestoreDoc = fsDb.collection('point_shop').doc('state');
+    firestoreDoc = new FirestoreClient(serviceAccount);
     console.log('✔ Firebase Firestore 연동 성공 (영구 보존 활성화)');
   } else {
     console.log('ℹ Firebase 인증 정보가 없어 로컬 파일(data.json) 모드로 동작합니다.');
@@ -77,9 +74,8 @@ function ensureDefaults() {
 async function initData() {
   if (firestoreDoc) {
     try {
-      const snap = await firestoreDoc.get();
-      if (snap.exists) {
-        const d = snap.data();
+      const d = await firestoreDoc.get('point_shop', 'state');
+      if (d && (d.members || d.history || d.sold || d.products)) {
         db = { members: d.members || {}, history: d.history || [], sold: d.sold || {}, products: d.products || [] };
         ensureDefaults();
         console.log(`✔ Firebase에서 데이터를 불러왔습니다. (회원 ${Object.keys(db.members).length}명, 상품 ${db.products.length}종, 내역 ${db.history.length}건)`);
@@ -87,7 +83,7 @@ async function initData() {
       } else {
         db = loadLocal();
         ensureDefaults();
-        await firestoreDoc.set(db);
+        await firestoreDoc.set(db, 'point_shop', 'state');
         console.log('✔ 로컬 데이터를 Firebase에 최초 동기화했습니다.');
         return;
       }
@@ -99,22 +95,46 @@ async function initData() {
   ensureDefaults();
 }
 
-function save() {
-  // 1. 로컬 파일 백업
+let saveTimer = null;
+async function performSave() {
+  // 1. 로컬 파일 백업 (비동기 atomic 쓰기)
   try {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-    const tmp = DATA_FILE + '.tmp';
-    fs.writeFileSync(tmp, JSON.stringify(db));
-    fs.renameSync(tmp, DATA_FILE);
-  } catch (e) {}
+    await fs.promises.mkdir(DATA_DIR, { recursive: true });
+    const tmp = `${DATA_FILE}.${Date.now()}.${Math.random().toString(36).slice(2, 7)}.tmp`;
+    await fs.promises.writeFile(tmp, JSON.stringify(db));
+    await fs.promises.rename(tmp, DATA_FILE);
+  } catch (e) {
+    console.error('⚠ 로컬 데이터 저장 실패:', e.message);
+  }
 
   // 2. Firebase Firestore 비동기 저장
   if (firestoreDoc) {
-    firestoreDoc.set(db).catch(err => {
+    firestoreDoc.set(db, 'point_shop', 'state').catch(err => {
       console.error('⚠ Firebase 저장 중 오류 발생:', err.message);
     });
   }
 }
+
+function save() {
+  // 잦은 호출 시 디바운싱(50ms)으로 파일 I/O 및 네트워크 부하 최소화
+  if (!saveTimer) {
+    saveTimer = setTimeout(() => {
+      saveTimer = null;
+      performSave();
+    }, 50);
+  }
+}
+
+// 프로세스 종료 시 미저장 데이터 안전 보장
+async function flushSave() {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+    await performSave();
+  }
+}
+process.on('SIGINT', async () => { await flushSave(); process.exit(0); });
+process.on('SIGTERM', async () => { await flushSave(); process.exit(0); });
 const uid = () => 'm' + crypto.randomBytes(5).toString('hex');
 const nowStr = () => new Date().toLocaleString('ko-KR', { hour12: false, timeZone: 'Asia/Seoul' });
 function log(m, type, amount, detail, extra = {}) {
@@ -165,6 +185,14 @@ function fail(ip) {
   if (f.n >= 8) { f.until = Date.now() + 5 * 60 * 1000; f.n = 0; }
   fails.set(ip, f);
 }
+// 메모리 누수 방지: 5분마다 만료된 실패 기록 청소
+setInterval(() => {
+  const t = Date.now();
+  for (const [ip, f] of fails) {
+    if (f.until <= t) fails.delete(ip);
+  }
+}, 5 * 60 * 1000).unref();
+
 const same = (a, b) => {
   const h = x => crypto.createHash('sha256').update(String(x)).digest();
   return crypto.timingSafeEqual(h(a), h(b));
@@ -185,7 +213,10 @@ function auth(role) {
 const app = express();
 app.set('trust proxy', 1);
 app.use(express.json({ limit: '5mb' }));
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public'), {
+  maxAge: '1h',
+  etag: true
+}));
 const bad = (res, msg, code = 400) => res.status(code).json({ error: msg });
 
 app.get('/api/info', (req, res) => res.json({ name: SHOP_NAME, version: VERSION, requireSecret: Boolean(ADMIN_SECRET) }));

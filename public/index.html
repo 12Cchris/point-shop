@@ -4,7 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="theme-color" content="#f4f0e8">
 <title>포인트 상점</title>
@@ -172,13 +174,20 @@ const ok = text => { flash = { ok:true, text }; };
 function go(v) { view = v; cart = {}; render(); }
 
 /* ---------- 자동 로그아웃 ---------- */
+let lastActivity = 0;
 function resetIdle() {
   clearTimeout(idleTimer);
   const isRemember = localStorage.getItem('ps.remember') === '1';
   const sec = isRemember ? 1800 : IDLE_SEC; // 기억하기 체크 시 30분, 미체크 시 2분
   if (view === 'shop') idleTimer = setTimeout(() => { logout('오랫동안 사용하지 않아 로그아웃되었습니다.'); }, sec * 1000);
 }
-['click','keydown','touchstart','mousemove'].forEach(e => document.addEventListener(e, resetIdle));
+function onUserActivity() {
+  const now = Date.now();
+  if (now - lastActivity < 1000) return; // 1초 내 과도한 이벤트 발생 제한 (스로틀)
+  lastActivity = now;
+  resetIdle();
+}
+['click','keydown','touchstart','mousemove'].forEach(e => document.addEventListener(e, onUserActivity, { passive: true }));
 setInterval(() => { if (view === 'shop' && !busy) refreshMe(true); }, 20000);
 
 /* ============================================================

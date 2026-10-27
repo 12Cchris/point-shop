@@ -10,6 +10,8 @@ npm start
 ```
 브라우저에서 http://localhost:3000 접속 (관리자 기본 PIN: `1234`)
 
+서버는 Node.js 기본 모듈만 사용하므로 `npm install` 단계는 의존성이 추가된 경우에만 필요합니다. `node_modules/` 폴더 없이 `npm start`로 바로 실행할 수 있습니다.
+
 ---
 
 ## 인터넷에 올리기 (Render + Firebase 무료 DB)

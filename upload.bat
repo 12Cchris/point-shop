@@ -1,4 +1,5 @@
 @echo off
+setlocal
 title Point Shop - GitHub Upload
 
 cd /d "%~dp0"
@@ -27,59 +28,71 @@ if "%REPO_URL%"=="" (
     goto END
 )
 git init
+if errorlevel 1 goto FAILED
 git branch -M main
-git remote add origin %REPO_URL%
+if errorlevel 1 goto FAILED
+git remote add origin "%REPO_URL%"
+if errorlevel 1 goto FAILED
 echo [INFO] Git repository connected.
 echo.
 
 :GIT_READY
-:: 3. Check Changes
-git status --porcelain > nul 2>&1
-set HAS_CHANGES=
-for /f "tokens=*" %%i in ('git status --porcelain') do set HAS_CHANGES=1
-
-if not defined HAS_CHANGES (
-    echo [INFO] No modified files detected. (Already up to date)
-    echo.
-    goto PUSH_ONLY
+:: 3. Confirm repository and remote
+git rev-parse --is-inside-work-tree >nul 2>nul
+if errorlevel 1 (
+    echo [ERROR] This folder is not a valid Git repository.
+    goto END
+)
+git remote get-url origin >nul 2>nul
+if errorlevel 1 (
+    echo [ERROR] No "origin" remote is configured.
+    echo Run this script from the project folder connected to GitHub.
+    goto END
 )
 
-echo [1/3] Adding changed files (git add) ...
-git add .
+:: 4. Stage all changes, including new files and deletions
+echo [1/3] Adding changed files (git add -A) ...
+git add -A
+if errorlevel 1 goto FAILED
 echo.
 
-set DEFAULT_MSG=Update %date% %time%
-set /p COMMIT_MSG="Commit message (Press Enter for default): "
-if "%COMMIT_MSG%"=="" set COMMIT_MSG=%DEFAULT_MSG%
+git diff --cached --quiet
+if errorlevel 2 goto FAILED
+if errorlevel 1 goto COMMIT
+echo [INFO] No new changes to commit.
+goto PUSH_ONLY
 
+:COMMIT
+set "DEFAULT_MSG=Update %date% %time%"
+set "COMMIT_MSG="
+set /p "COMMIT_MSG=Commit message (Press Enter for default): "
+if not defined COMMIT_MSG set "COMMIT_MSG=%DEFAULT_MSG%"
 echo.
-echo [2/3] Creating commit (git commit) ...
+echo [2/3] Creating commit ...
 git commit -m "%COMMIT_MSG%"
+if errorlevel 1 goto FAILED
 echo.
 
 :PUSH_ONLY
-echo [3/3] Uploading to GitHub (git push) ...
-git push origin main
+echo [3/3] Uploading current branch to GitHub ...
+git push -u origin HEAD
 if errorlevel 1 (
-    echo [INFO] Retrying with pull rebase...
-    git pull origin main --rebase
-    git push origin main
+    echo [ERROR] Push failed. Check the GitHub message above.
+    echo If the remote branch has newer commits, pull/rebase in a terminal and run this again.
+    goto END
 )
+echo.
+echo ======================================================
+echo   SUCCESS! Current branch uploaded to GitHub.
+echo   Render will deploy if it watches this branch.
+echo ======================================================
+goto END
 
-if errorlevel 1 (
-    echo.
-    echo ======================================================
-    echo   [ERROR] Upload failed.
-    echo   Please check your GitHub login or repo URL.
-    echo ======================================================
-) else (
-    echo.
-    echo ======================================================
-    echo   SUCCESS! Uploaded to GitHub.
-    echo   Render will automatically deploy the new version.
-    echo ======================================================
-)
+:FAILED
+echo.
+echo [ERROR] A Git command failed. Read the error above; no success was reported.
 
 :END
 echo.
 pause
+endlocal
