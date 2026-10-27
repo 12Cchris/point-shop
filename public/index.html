@@ -146,6 +146,7 @@ let busy = false;
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const jsArg = value => esc(JSON.stringify(String(value)).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029'));
 const fmt = n => Number(n).toLocaleString('ko-KR');
 const prod = id => products.find(p => p.id === id);
 const tok = { get m(){ return sessionStorage.getItem('ps.m'); }, set m(v){ v ? sessionStorage.setItem('ps.m', v) : sessionStorage.removeItem('ps.m'); },
@@ -266,7 +267,7 @@ function vShop() {
         ${p.remain != null ? `<div class="stockline">${out ? '품절' : '남은 수량 ' + p.remain + '개'}</div>` : ''}
         <div class="pfoot">
           <span class="price num">${fmt(p.price)}<i>P</i></span>
-          <button class="btn line sm" onclick="addCart('${p.id}')" ${out ? 'disabled' : ''}>담기</button>
+          <button class="btn line sm" onclick="addCart(${jsArg(p.id)})" ${out ? 'disabled' : ''}>담기</button>
         </div>
       </div>
     </div>`;
@@ -292,7 +293,7 @@ function vShop() {
             statusHtml = `<span class="badge done">✅ 지급 완료</span>`;
           } else {
             statusHtml = `<span class="badge pending">⏳ 준비 중</span>
-              <button class="linkbtn" style="margin-left:6px;font-size:12px;color:var(--accent)" onclick="requestRefund('${h.id}')">환불 요청</button>`;
+              <button class="linkbtn" style="margin-left:6px;font-size:12px;color:var(--accent)" onclick="requestRefund(${jsArg(h.id)})">환불 요청</button>`;
           }
           return `<tr>
             <td class="mute">${esc(h.t)}</td>
@@ -315,7 +316,7 @@ function cartHtml() {
   return `<h2>장바구니</h2>
   ${ids.map(id => { const p = prod(id); return `
     <div class="cl"><span>${esc(p.name)}</span>
-      <span class="q"><button onclick="qty('${id}',-1)">−</button><span class="num">${cart[id]}</span><button onclick="qty('${id}',1)">＋</button>
+      <span class="q"><button onclick="qty(${jsArg(id)},-1)">−</button><span class="num">${cart[id]}</span><button onclick="qty(${jsArg(id)},1)">＋</button>
       <span class="num" style="min-width:56px;text-align:right">${fmt(p.price * cart[id])}</span></span></div>`; }).join('')}
   <div style="margin-top:12px">
     <div class="sumrow"><span class="mute">보유</span><span class="num">${fmt(me.points)} P</span></div>
@@ -377,6 +378,9 @@ function getSavedSecret() {
   const urlParam = new URLSearchParams(window.location.search).get('secret');
   if (urlParam) {
     sessionStorage.setItem('ps.adm_secret', urlParam);
+    const cleanUrl = new URL(window.location.href);
+    cleanUrl.searchParams.delete('secret');
+    window.history.replaceState(window.history.state, '', cleanUrl);
     return urlParam;
   }
   return sessionStorage.getItem('ps.adm_secret') || '';
@@ -410,7 +414,7 @@ async function doAdminLogin(e) {
     if (secret) sessionStorage.setItem('ps.adm_secret', secret);
     tab = 'members';
     await loadAdmin(); go('admin');
-  } catch (err) { fail(err); }
+  } catch (err) { tok.a = null; fail(err); }
 }
 async function loadAdmin() { adm = await api('/api/admin/state', {}, 'admin'); }
 async function adminDo(path, opt, msg) {
@@ -418,7 +422,10 @@ async function adminDo(path, opt, msg) {
   catch (err) { flash = { text:err.message }; }
   render();
 }
-function adminLogout() { tok.a = null; adm = null; go('login'); }
+async function adminLogout() {
+  try { await api('/api/admin/logout', { method:'POST' }, 'admin'); } catch (e) {}
+  tok.a = null; adm = null; go('login');
+}
 
 function vAdmin() {
   const tabs = [
@@ -456,12 +463,12 @@ function aMembers() {
       ${list.map(m => `<tr>
         <td>${esc(m.name)}</td>
         <td class="r num"><b>${fmt(m.points)}</b></td>
-        <td><code class="cd">${esc(m.code)}</code> <button class="linkbtn" onclick="setCode('${m.id}')">변경</button></td>
+        <td><code class="cd">${esc(m.code)}</code> <button class="linkbtn" onclick="setCode(${jsArg(m.id)})">변경</button></td>
         <td><div class="adj"><input type="number" id="pt_${m.id}" min="0" placeholder="숫자">
-          <button class="btn line sm" onclick="adj('${m.id}','add')">지급</button>
-          <button class="btn line sm" onclick="adj('${m.id}','sub')">차감</button>
-          <button class="btn line sm" onclick="adj('${m.id}','set')">설정</button></div></td>
-        <td class="r"><button class="btn danger sm" onclick="delMember('${m.id}','${esc(m.name)}')">삭제</button></td>
+          <button class="btn line sm" onclick="adj(${jsArg(m.id)},'add')">지급</button>
+          <button class="btn line sm" onclick="adj(${jsArg(m.id)},'sub')">차감</button>
+          <button class="btn line sm" onclick="adj(${jsArg(m.id)},'set')">설정</button></div></td>
+        <td class="r"><button class="btn danger sm" onclick="delMember(${jsArg(m.id)},${jsArg(m.name)})">삭제</button></td>
       </tr>`).join('')}</table></div>` : '<div class="empty">아직 회원이 없습니다.</div>'}
   </div>`;
 }
@@ -512,8 +519,8 @@ function aProducts() {
         <td class="r num">${p.sold || 0}</td>
         <td class="mute" style="font-size:13px">${esc(p.desc || '-')}</td>
         <td class="r">
-          <button class="btn line sm" onclick="openEditProd('${p.id}')">수정</button>
-          <button class="btn danger sm" onclick="delProd('${p.id}','${esc(p.name)}')">삭제</button>
+          <button class="btn line sm" onclick="openEditProd(${jsArg(p.id)})">수정</button>
+          <button class="btn danger sm" onclick="delProd(${jsArg(p.id)},${jsArg(p.name)})">삭제</button>
         </td>
       </tr>`).join('')}
     </table></div>` : '<div class="empty">등록된 상품이 없습니다. 위에서 추가해 보세요.</div>'}
@@ -631,19 +638,19 @@ function aHistory() {
               <div>
                 <span class="badge refund-wait">🚨 환불 대기</span>
                 <div style="display:flex;gap:4px;margin-top:4px">
-                  <button class="btn sm" style="padding:2px 8px;font-size:12px;background:var(--ok);border-color:var(--ok)" onclick="approveRefund('${h.id}')">승인</button>
-                  <button class="btn line sm" style="padding:2px 8px;font-size:12px" onclick="rejectRefund('${h.id}')">거절</button>
+                  <button class="btn sm" style="padding:2px 8px;font-size:12px;background:var(--ok);border-color:var(--ok)" onclick="approveRefund(${jsArg(h.id)})">승인</button>
+                  <button class="btn line sm" style="padding:2px 8px;font-size:12px" onclick="rejectRefund(${jsArg(h.id)})">거절</button>
                 </div>
               </div>`;
           } else if (h.status === 'refunded') {
             statusCol = `<span class="badge refunded">↩️ 환불 완료</span>`;
           } else if (h.status === 'done') {
-            statusCol = `<span class="badge done" onclick="toggleStatus('${h.id}')" title="클릭하여 지급 대기로 변경">✅ 지급 완료</span>`;
+            statusCol = `<span class="badge done" onclick="toggleStatus(${jsArg(h.id)})" title="클릭하여 지급 대기로 변경">✅ 지급 완료</span>`;
           } else {
             statusCol = `
               <div style="display:flex;align-items:center;gap:6px">
-                <span class="badge pending" onclick="toggleStatus('${h.id}')" title="클릭하여 지급 완료로 변경">⏳ 지급 대기</span>
-                <button class="linkbtn" style="font-size:11px;color:var(--accent)" onclick="approveRefund('${h.id}')" title="관리자 직접 환불">환불</button>
+                <span class="badge pending" onclick="toggleStatus(${jsArg(h.id)})" title="클릭하여 지급 완료로 변경">⏳ 지급 대기</span>
+                <button class="linkbtn" style="font-size:11px;color:var(--accent)" onclick="approveRefund(${jsArg(h.id)})" title="관리자 직접 환불">환불</button>
               </div>`;
           }
         }
@@ -725,8 +732,10 @@ async function exportData() {
   try {
     const d = await api('/api/admin/export', {}, 'admin');
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([JSON.stringify(d, null, 2)], { type:'application/json' }));
-    a.download = 'point-shop-backup.json'; a.click(); URL.revokeObjectURL(a.href);
+    const url = URL.createObjectURL(new Blob([JSON.stringify(d, null, 2)], { type:'application/json' }));
+    a.href = url;
+    a.download = 'point-shop-backup.json'; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   } catch (err) { fail(err); }
 }
 function importData(e) {

@@ -16,14 +16,24 @@ npm start
 
 ## 인터넷에 올리기 (Render + Firebase 무료 DB)
 
-Firebase를 연동하면 **몇 달 동안 접속하지 않아도 비활성화나 데이터 삭제 걱정 없이** 회원/포인트 정보가 평생 안전하게 보존됩니다.
+Firebase를 연동하면 서비스가 쉬는 동안에도 회원/포인트 정보를 Firestore에 저장할 수 있습니다. Firebase 프로젝트와 데이터베이스를 유지하고 사용량 한도를 확인해 주세요.
 
 ### 1단계: Firebase 설정 (1회만 진행)
 1. [Firebase 콘솔](https://console.firebase.google.com/) 접속 후 구글 로그인 → **프로젝트 추가**
 2. 왼쪽 메뉴 **빌드(Build) → Firestore Database** 클릭 → **데이터베이스 만들기** (위치는 `asia-northeast3 (서울)` 추천)
-3. 보안 규칙은 **테스트 모드**로 시작 클릭 (서버 Admin SDK로 통신하므로 안전합니다)
+3. Firestore Database를 **프로덕션 모드**로 만드세요. 브라우저에서 직접 Firestore에 접근하지 않도록 보안 규칙에서 모든 클라이언트 읽기/쓰기를 거부합니다.
 4. 왼쪽 위 **프로젝트 개요 옆 톱니바퀴(⚙) → 프로젝트 설정** 이동
 5. **서비스 계정(Service Accounts)** 탭 선택 → **새 비공개 키 생성** 버튼 클릭 → JSON 파일 다운로드
+
+> 서버는 서비스 계정 자격 증명으로 Firestore REST API를 호출합니다. 이 요청은 Firestore 보안 규칙에 의해 차단되지 않으므로, 아래처럼 클라이언트 접근은 거부한 채 서비스 계정 키를 서버 환경변수에만 보관하세요.
+> ```
+> rules_version = '2';
+> service cloud.firestore {
+>   match /databases/{database}/documents {
+>     match /{document=**} { allow read, write: if false; }
+>   }
+> }
+> ```
 
 ### 2단계: Render에 배포 및 환경변수 등록
 1. 이 폴더를 GitHub 저장소로 올립니다. (`node_modules/`, `data/`, `serviceAccountKey.json`은 `.gitignore`에 의해 자동으로 제외됩니다)
@@ -32,11 +42,11 @@ Firebase를 연동하면 **몇 달 동안 접속하지 않아도 비활성화나
    - Start Command: `npm start`
 3. **Environment** 탭에 환경변수 추가:
    - `ADMIN_PIN` : 나만의 관리자 비밀번호 (필수)
-   - `ADMIN_SECRET` : 관리자 2단계 보안 시크릿 키 (강력 추천, 예: `my-secret-key-1234`)
+   - `ADMIN_SECRET` : 관리자 2단계 보안 시크릿 키 (강력 추천, 충분히 긴 임의 문자열)
    - `APP_URL` : Render 사이트 주소 (슬립 방지용, 예: `https://point-shop.onrender.com`)
    - `SHOP_NAME` : 상점 이름 (선택)
    - `FIREBASE_SERVICE_ACCOUNT` : 1단계에서 다운로드받은 **JSON 파일의 내용 전체**를 그대로 복사해서 값(Value)에 붙여넣기
-4. **Save Changes**를 누르면 배포가 시작되며 영구 무료 DB와 연동됩니다!
+4. **Save Changes**를 누르면 배포가 시작되며 Firestore에 데이터를 저장합니다. Firebase의 사용량 한도와 요금 정책을 확인하세요.
 
 > **참고**: `FIREBASE_SERVICE_ACCOUNT`를 설정하지 않으면 자동으로 로컬 `data/data.json` 파일 모드로 동작합니다. 로컬 컴퓨터에서 테스트할 때는 다운받은 JSON 파일 이름을 `serviceAccountKey.json`으로 바꾸어 프로젝트 루트 폴더에 넣으면 로컬에서도 Firebase와 연동됩니다.
 

@@ -1,6 +1,6 @@
 /* 포인트 상점 서버 v2.1.0
    - 포인트·구매 검증은 전부 서버에서 합니다 (브라우저에서 조작 불가)
-   - 데이터는 Firebase Firestore에 영구 보존되며, 미설정 시 로컬 data.json 에 저장됩니다 */
+   - 데이터는 Firebase Firestore에 저장되며, 미설정 시 로컬 data.json 에 저장됩니다 */
 const express = require('./lib/http-app');
 const fs = require('fs');
 const path = require('path');
@@ -15,6 +15,11 @@ const ADMIN_PIN = process.env.ADMIN_PIN || '1234';
 const ADMIN_SECRET = (process.env.ADMIN_SECRET || '').trim();
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'data.json');
+
+if (process.env.RENDER_EXTERNAL_URL && !process.env.ADMIN_PIN) {
+  console.error('✖ Render에서 ADMIN_PIN 환경변수를 설정해야 서버를 시작할 수 있습니다.');
+  process.exit(1);
+}
 
 if (ADMIN_PIN === '1234') {
   console.warn('⚠ 관리자 비밀번호가 기본값(1234)입니다. 환경변수 ADMIN_PIN 으로 꼭 바꿔주세요.');
@@ -41,7 +46,7 @@ try {
 
   if (serviceAccount) {
     firestoreDoc = new FirestoreClient(serviceAccount);
-    console.log('✔ Firebase Firestore 연동 성공 (영구 보존 활성화)');
+    console.log('✔ Firebase Firestore 연동 성공 (클라우드 저장 활성화)');
   } else {
     console.log('ℹ Firebase 인증 정보가 없어 로컬 파일(data.json) 모드로 동작합니다.');
   }
@@ -235,6 +240,11 @@ app.post('/api/logout', (req, res) => {
   sessions.delete((req.headers.authorization || '').replace(/^Bearer /, ''));
   res.json({ ok: true });
 });
+app.post('/api/admin/logout', (req, res) => {
+  const token = (req.headers.authorization || '').replace(/^Bearer /, '');
+  if (sessions.get(token)?.role === 'admin') sessions.delete(token);
+  res.json({ ok: true });
+});
 app.get('/api/me', auth('member'), (req, res) => {
   const m = db.members[req.session.mid];
   if (!m) return bad(res, '회원 정보가 없습니다.', 401);
@@ -276,6 +286,7 @@ app.post('/api/refund-request', auth('member'), (req, res) => {
   if (h.type !== '구매') return bad(res, '구매 내역만 환불 요청이 가능합니다.');
   if (h.status === 'refunded') return bad(res, '이미 환불 완료된 내역입니다.');
   if (h.status === 'refund_pending') return bad(res, '이미 환불 요청되어 관리자 승인 대기 중입니다.');
+  if (h.status && h.status !== 'pending') return bad(res, '지급 대기 중인 구매만 환불 요청할 수 있습니다.');
 
   h.status = 'refund_pending';
   save();
@@ -324,15 +335,19 @@ app.get('/api/admin/state', auth('admin'), (req, res) => {
 app.post('/api/admin/products', auth('admin'), (req, res) => {
   const b = req.body || {};
   const name = String(b.name || '').trim();
-  const price = parseInt(b.price);
+  const price = b.price === '' || b.price === null || b.price === undefined ? NaN : Number(b.price);
   if (!name) return bad(res, '상품명을 입력하세요.');
-  if (isNaN(price) || price < 0) return bad(res, '가격을 0 이상 숫자로 입력하세요.');
-  const stock = (b.stock === '' || b.stock === null || isNaN(parseInt(b.stock))) ? null : Math.max(0, parseInt(b.stock));
+  if (name.length > 100) return bad(res, '상품명은 100자 이하로 입력하세요.');
+  if (!Number.isSafeInteger(price) || price < 0 || price > 1e9) return bad(res, '가격은 0 이상 10억 이하의 정수로 입력하세요.');
+  const desc = String(b.desc || '').trim();
+  if (desc.length > 500) return bad(res, '상품 설명은 500자 이하로 입력하세요.');
+  const stock = b.stock === '' || b.stock === null || b.stock === undefined ? null : Number(b.stock);
+  if (stock !== null && (!Number.isSafeInteger(stock) || stock < 0 || stock > 1e9)) return bad(res, '재고는 0 이상 10억 이하의 정수로 입력하세요.');
   const prod = {
     id: 'p' + crypto.randomBytes(4).toString('hex'),
     name,
     price,
-    desc: String(b.desc || '').trim(),
+    desc,
     stock,
     img: String(b.img || '').trim(),
   };
@@ -348,16 +363,26 @@ app.put('/api/admin/products/:id', auth('admin'), (req, res) => {
   if (b.name !== undefined) {
     const name = String(b.name || '').trim();
     if (!name) return bad(res, '상품명을 입력하세요.');
+    if (name.length > 100) return bad(res, '상품명은 100자 이하로 입력하세요.');
     prod.name = name;
   }
   if (b.price !== undefined) {
-    const price = parseInt(b.price);
-    if (isNaN(price) || price < 0) return bad(res, '가격을 0 이상 숫자로 입력하세요.');
+    const price = b.price === '' || b.price === null ? NaN : Number(b.price);
+    if (!Number.isSafeInteger(price) || price < 0 || price > 1e9) return bad(res, '가격은 0 이상 10억 이하의 정수로 입력하세요.');
     prod.price = price;
   }
-  if (b.desc !== undefined) prod.desc = String(b.desc || '').trim();
+  if (b.desc !== undefined) {
+    const desc = String(b.desc || '').trim();
+    if (desc.length > 500) return bad(res, '상품 설명은 500자 이하로 입력하세요.');
+    prod.desc = desc;
+  }
   if (b.stock !== undefined) {
-    prod.stock = (b.stock === '' || b.stock === null || isNaN(parseInt(b.stock))) ? null : Math.max(0, parseInt(b.stock));
+    if (b.stock === '' || b.stock === null) prod.stock = null;
+    else {
+      const stock = Number(b.stock);
+      if (!Number.isSafeInteger(stock) || stock < 0 || stock > 1e9) return bad(res, '재고는 0 이상 10억 이하의 정수로 입력하세요.');
+      prod.stock = stock;
+    }
   }
   if (b.img !== undefined) prod.img = String(b.img || '').trim();
   save();
@@ -372,6 +397,7 @@ app.delete('/api/admin/products/:id', auth('admin'), (req, res) => {
 app.post('/api/admin/history/:id/status', auth('admin'), (req, res) => {
   const h = db.history.find(x => x.id === req.params.id);
   if (!h) return bad(res, '내역을 찾을 수 없습니다.', 404);
+  if (h.type !== '구매' || h.status === 'refunded' || h.status === 'refund_pending') return bad(res, '이 내역의 지급 상태를 변경할 수 없습니다.');
   h.status = h.status === 'done' ? 'pending' : 'done';
   save();
   res.json({ ok: true, status: h.status });
@@ -380,8 +406,10 @@ app.post('/api/admin/history/:id/refund-approve', auth('admin'), (req, res) => {
   const h = db.history.find(x => x.id === req.params.id);
   if (!h) return bad(res, '내역을 찾을 수 없습니다.', 404);
   if (h.status === 'refunded') return bad(res, '이미 환불 처리된 건입니다.');
+  if (h.type !== '구매' || ![undefined, 'pending', 'refund_pending'].includes(h.status)) return bad(res, '환불 가능한 구매 내역이 아닙니다.');
 
   const refundAmount = Math.abs(h.amount);
+  if (!Number.isSafeInteger(refundAmount) || refundAmount < 0) return bad(res, '환불 금액이 올바르지 않습니다.');
   const m = db.members[h.mid];
   if (m) {
     m.points += refundAmount;
@@ -415,11 +443,12 @@ app.post('/api/admin/history/:id/refund-reject', auth('admin'), (req, res) => {
 app.post('/api/admin/members', auth('admin'), (req, res) => {
   const b = req.body || {};
   const name = String(b.name || '').trim();
-  const pt = parseInt(b.points) || 0;
+  const pt = b.points === '' || b.points === null || b.points === undefined ? 0 : Number(b.points);
   let code = String(b.code || '').trim();
   if (!name) return bad(res, '이름을 입력하세요.');
   if (name.length > 20) return bad(res, '이름은 20자 이하로 해주세요.');
-  if (pt < 0 || pt > 1e9) return bad(res, '포인트 범위가 올바르지 않아요.');
+  if (!Number.isSafeInteger(pt) || pt < 0 || pt > 1e9) return bad(res, '포인트는 0 이상 10억 이하의 정수로 입력하세요.');
+  if (code && (code.length < 4 || code.length > 64)) return bad(res, '확인 코드는 4자 이상 64자 이하로 입력하세요.');
   if (Object.values(db.members).some(m => m.name === name)) return bad(res, '이미 있는 이름입니다.');
   if (!code) code = String(crypto.randomInt(1000, 10000));
   const m = { id: uid(), name, points: pt, code };
@@ -432,9 +461,13 @@ app.post('/api/admin/members/:id/points', auth('admin'), (req, res) => {
   const m = db.members[req.params.id];
   if (!m) return bad(res, '회원을 찾을 수 없어요.', 404);
   const { mode } = req.body || {};
-  const v = parseInt((req.body || {}).value);
-  if (isNaN(v) || v < 0 || v > 1e9) return bad(res, '0 이상의 숫자를 입력하세요.');
-  if (mode === 'add') { m.points += v; log(m, '지급', v, '관리자 지급'); }
+  const rawValue = (req.body || {}).value;
+  const v = rawValue === '' || rawValue === null || rawValue === undefined ? NaN : Number(rawValue);
+  if (!Number.isSafeInteger(v) || v < 0 || v > 1e9) return bad(res, '0 이상 10억 이하의 정수를 입력하세요.');
+  if (mode === 'add') {
+    if (m.points + v > 1e9) return bad(res, '회원 포인트는 최대 10억 P까지 설정할 수 있어요.');
+    m.points += v; log(m, '지급', v, '관리자 지급');
+  }
   else if (mode === 'sub') {
     if (v > m.points) return bad(res, '보유 포인트보다 많이 차감할 수 없어요.');
     m.points -= v; log(m, '차감', -v, '관리자 차감');
@@ -448,7 +481,7 @@ app.post('/api/admin/members/:id/code', auth('admin'), (req, res) => {
   const m = db.members[req.params.id];
   if (!m) return bad(res, '회원을 찾을 수 없어요.', 404);
   const code = String((req.body || {}).code || '').trim();
-  if (code.length < 4) return bad(res, '확인 코드는 4자 이상이어야 해요.');
+  if (code.length < 4 || code.length > 64) return bad(res, '확인 코드는 4자 이상 64자 이하로 입력하세요.');
   m.code = code;
   for (const [k, s] of sessions) if (s.mid === m.id) sessions.delete(k);
   save();
@@ -468,14 +501,34 @@ app.get('/api/admin/export', auth('admin'), (req, res) => {
 });
 app.post('/api/admin/import', auth('admin'), (req, res) => {
   const d = req.body || {};
-  if (!d.members || typeof d.members !== 'object' || !Array.isArray(d.history)) return bad(res, '올바른 백업 파일이 아닙니다.');
-  db = { members: d.members, history: d.history, sold: d.sold || {} };
+  if (!d.members || typeof d.members !== 'object' || Array.isArray(d.members) || !Array.isArray(d.history)) return bad(res, '올바른 백업 파일이 아닙니다.');
+  const isRecord = v => v !== null && typeof v === 'object' && !Array.isArray(v);
+  const validMembers = Object.entries(d.members).every(([id, m]) => isRecord(m)
+    && /^m[0-9a-f]{10}$/.test(id) && m.id === id && typeof m.name === 'string' && m.name.length > 0 && m.name.length <= 20
+    && Number.isSafeInteger(m.points) && m.points >= 0 && m.points <= 1e9
+    && typeof m.code === 'string' && m.code.length >= 4 && m.code.length <= 64);
+  if (!validMembers) return bad(res, '회원 데이터 형식이 올바르지 않습니다.');
+  if (!d.history.every(h => isRecord(h) && typeof h.type === 'string'
+    && (h.id === undefined || (typeof h.id === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(h.id))))) return bad(res, '내역 데이터 형식이 올바르지 않습니다.');
+  if (d.sold !== undefined && (!d.sold || typeof d.sold !== 'object' || Array.isArray(d.sold))) return bad(res, '판매 데이터 형식이 올바르지 않습니다.');
+  if (d.sold && !Object.values(d.sold).every(v => Number.isSafeInteger(v) && v >= 0)) return bad(res, '판매 수량 형식이 올바르지 않습니다.');
+  if (d.products !== undefined && (!Array.isArray(d.products) || d.products.some(p => !isRecord(p)
+    || typeof p.id !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(p.id)
+    || typeof p.name !== 'string' || !p.name.length || p.name.length > 100
+    || !Number.isSafeInteger(p.price) || p.price < 0 || p.price > 1e9
+    || (p.stock != null && (!Number.isSafeInteger(p.stock) || p.stock < 0 || p.stock > 1e9))))) return bad(res, '상품 데이터 형식이 올바르지 않습니다.');
+  db = {
+    members: d.members,
+    history: d.history,
+    sold: d.sold || {},
+    products: Array.isArray(d.products) ? d.products : PRODUCTS.map(p => ({ ...p }))
+  };
   sessions.forEach((s, k) => { if (s.role === 'member') sessions.delete(k); });
   save();
   res.json({ ok: true });
 });
 app.post('/api/admin/reset', auth('admin'), (req, res) => {
-  db = { members: {}, history: [], sold: {} };
+  db = { members: {}, history: [], sold: {}, products: Array.isArray(db.products) ? db.products : PRODUCTS.map(p => ({ ...p })) };
   sessions.forEach((s, k) => { if (s.role === 'member') sessions.delete(k); });
   save();
   res.json({ ok: true });
